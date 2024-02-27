@@ -216,6 +216,10 @@ class CausalModel(SeqToSeqModel):
     def run(self, prompt: str, **kwargs) -> str:
         self.load()
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+
+        # truncate from the left if the prepended docs make it exceed the model max seq len
+        inputs["input_ids"] = inputs["input_ids"][:, -self.model.config.max_position_embeddings:]
+
         # if "RWForCausalLM" in str(type(self.model)):
         inputs.pop("token_type_ids")  # Not used by Falcon model
 

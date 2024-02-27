@@ -11,6 +11,7 @@ from lm_eval import evaluator
 def main(task_name: str, **kwargs):
     task_map = dict(
         mmlu=mmlu.main,
+        mmlu_retrieval_prepare=mmlu.save_inputs_for_retrieval,
         bbh=bbh.main,
         drop=drop.main,
         humaneval=humaneval,
@@ -44,9 +45,10 @@ def main(task_name: str, **kwargs):
         print(evaluator.make_table(results))
         return
 
-    results = {name: round(score * 100, 2) for name, score in results.items()}
-    print(results)
-    return results
+    if 'retrieval_prepare' not in task_name:
+        results = {name: round(score * 100, 2) for name, score in results.items()}
+        print(results)
+        return results
 
 
 """

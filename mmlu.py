@@ -3,12 +3,14 @@ Adapted from https://github.com/hendrycks/test/blob/master/evaluate_flan.py
 """
 
 import os
+import json
 from argparse import Namespace
 
 import numpy as np
 import pandas as pd
 from fire import Fire
 from tqdm import tqdm
+import pdb
 
 from modeling import select_model, EvalModel
 
@@ -214,6 +216,93 @@ def main(data_dir: str = "/gscratch/zlab/rulins/data/mmlu", ntrain: int = 5, **k
     weighted_acc = np.mean(np.concatenate(all_cors))
     print("Average accuracy: {:.3f}".format(weighted_acc))
     return weighted_acc
+
+
+
+def check_valid_length(text, max_input_length):
+    """
+    The original function counts text length in tokens. We counts by words instead.
+    The model.run() is revised accordingly to truncate from left in the case the text exceeds 
+        model_max_seq_len after prepending top-k docs.
+    """
+    return len(text.split(' ')) <= max_input_length
+
+def save_inputs_for_retrieval(
+        data_dir: str = "/gscratch/zlab/rulins/data/mmlu",
+        max_eval_seq_len: int = 1024,
+        ntrain: int = 5,
+        overwrite_saved_data: bool = False,
+        **kwargs):
+    """
+    Saves inputs for later retrieval.
+
+    Args:
+        data_dir (str): The directory where data will be saved. Defaults to "/gscratch/zlab/rulins/data/mmlu".
+        max_eval_seq_len (int): The maximum length of the evaluation sequence. Defaults to 1024.
+        ntrain (int): The number of few-shot samples to be concatenated before the question. Defaults to 5.
+        **kwargs: Additional keyword arguments can be used to pass other parameters.
+    
+    Returns:
+        None
+    """
+
+    args = Namespace(**locals())
+    print(locals())
+
+    output_file = f'saved_mmlu_inputs_for_retrieval-{args.ntrain}_shots-{max_eval_seq_len}_max_seq_len.jsonl'
+    if os.path.exists(output_file) and not overwrite_saved_data:
+        print(f"Found {output_file}\nSkipped")
+        return
+
+    subjects = sorted(
+        [
+            f.split("_test.csv")[0]
+            for f in os.listdir(os.path.join(args.data_dir, "test"))
+            if "_test.csv" in f
+        ]
+    )
+
+    for subject in tqdm(subjects):
+        dev_df = pd.read_csv(
+            os.path.join(args.data_dir, "dev", subject + "_dev.csv"), header=None
+        )[: args.ntrain]
+        test_df = pd.read_csv(
+            os.path.join(args.data_dir, "test", subject + "_test.csv"), header=None
+        )
+
+        data = []
+        total_count = 0
+        for i in range(test_df.shape[0]):
+            # get prompt and make sure it fits
+            k = args.ntrain
+            prompt_end = format_example(test_df, i, include_answer=False)
+            train_prompt = gen_prompt(dev_df, subject, k)
+            prompt = train_prompt + prompt_end
+
+            while not check_valid_length(prompt, max_eval_seq_len) and k > 0:
+                k -= 1
+                train_prompt = gen_prompt(dev_df, subject, k)
+                prompt = train_prompt + prompt_end
+            
+            label = test_df.iloc[i, test_df.shape[1] - 1]
+
+            sample = {
+                'subject': subject,
+                'subject_idx': i,
+                'idx': total_count,
+                'prompt_end': prompt_end,
+                'train_prompt': train_prompt,
+                'prompt': prompt,
+                'label': label,
+            }
+            data.append(sample)
+            total_count += 1
+        
+    with open(output_file, 'w') as fout:
+        for ex in data:
+            fout.write(json.dumps(ex) + "\n")
+    print(f"Saved MMLU vanilla inputs to saved_mmlu_inputs_for_retrieval.jsonl")
+    
 
 
 """
