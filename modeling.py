@@ -191,9 +191,20 @@ class CausalModel(SeqToSeqModel):
             args = {}
             if self.load_8bit:
                 args.update(device_map="auto", load_in_8bit=True)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_path, trust_remote_code=True, **args
-            )
+            # self.model = AutoModelForCausalLM.from_pretrained(
+            #     self.model_path, trust_remote_code=True, **args
+            # )
+            try:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    torch_dtype=torch.bfloat16,
+                    attn_implementation="flash_attention_2",
+                )
+            except:
+                self.model = transformers.AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    torch_dtype=torch.bfloat16,
+                )
             self.model.eval()
             if not self.load_8bit:
                 self.model.to(self.device)
@@ -205,8 +216,8 @@ class CausalModel(SeqToSeqModel):
     def run(self, prompt: str, **kwargs) -> str:
         self.load()
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-        if "RWForCausalLM" in str(type(self.model)):
-            inputs.pop("token_type_ids")  # Not used by Falcon model
+        # if "RWForCausalLM" in str(type(self.model)):
+        inputs.pop("token_type_ids")  # Not used by Falcon model
 
         outputs = self.model.generate(
             **inputs,
