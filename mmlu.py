@@ -135,7 +135,7 @@ def gen_prompt(train_df, subject, k=-1):
     return prompt
 
 
-def evaluate(args, subject, model: EvalModel, dev_df, test_df):
+def evaluate(args, subject, model: EvalModel, dev_df, test_df, hashed_retrieval_results=None):
     cors = []
     all_probs = []
 
@@ -143,6 +143,10 @@ def evaluate(args, subject, model: EvalModel, dev_df, test_df):
         # get prompt and make sure it fits
         k = args.ntrain
         prompt_end = format_example(test_df, i, include_answer=False)
+        
+        if hashed_retrieval_results is not None:
+            prompt_end = 'The is an additional context about the question: ' + hashed_retrieval_results[prompt_end] + '\nThe question is: ' + prompt_end
+        
         train_prompt = gen_prompt(dev_df, subject, k)
         prompt = train_prompt + prompt_end
 
@@ -230,7 +234,7 @@ def check_valid_length(text, max_input_length):
 def save_inputs_for_retrieval(
         data_dir: str = "/gscratch/zlab/rulins/data/mmlu",
         max_eval_seq_len: int = 1024,
-        ntrain: int = 5,
+        ntrain: int = 0,
         overwrite_saved_data: bool = False,
         **kwargs):
     """
@@ -239,7 +243,7 @@ def save_inputs_for_retrieval(
     Args:
         data_dir (str): The directory where data will be saved. Defaults to "/gscratch/zlab/rulins/data/mmlu".
         max_eval_seq_len (int): The maximum length of the evaluation sequence. Defaults to 1024.
-        ntrain (int): The number of few-shot samples to be concatenated before the question. Defaults to 5.
+        ntrain (int): The number of few-shot samples to be concatenated before the question. Defaults to 0. Supported range is 0-5.
         **kwargs: Additional keyword arguments can be used to pass other parameters.
     
     Returns:
@@ -262,6 +266,8 @@ def save_inputs_for_retrieval(
         ]
     )
 
+    data = []
+    total_count = 0
     for subject in tqdm(subjects):
         dev_df = pd.read_csv(
             os.path.join(args.data_dir, "dev", subject + "_dev.csv"), header=None
@@ -269,9 +275,7 @@ def save_inputs_for_retrieval(
         test_df = pd.read_csv(
             os.path.join(args.data_dir, "test", subject + "_test.csv"), header=None
         )
-
-        data = []
-        total_count = 0
+        
         for i in range(test_df.shape[0]):
             # get prompt and make sure it fits
             k = args.ntrain
@@ -290,6 +294,7 @@ def save_inputs_for_retrieval(
                 'subject': subject,
                 'subject_idx': i,
                 'idx': total_count,
+                'prompt_word_count': len(prompt.split(' ')),
                 'prompt_end': prompt_end,
                 'train_prompt': train_prompt,
                 'prompt': prompt,
@@ -302,8 +307,89 @@ def save_inputs_for_retrieval(
         for ex in data:
             fout.write(json.dumps(ex) + "\n")
     print(f"Saved MMLU vanilla inputs to saved_mmlu_inputs_for_retrieval.jsonl")
-    
 
+
+def hash_retrieval_results(
+        test_jsonl_with_retrieval: str = "",
+        concate_k: int = 1,
+):
+    hashed_results = {}
+
+    with open(test_jsonl_with_retrieval, 'r') as file:
+        for line in file:
+            data = json.loads(line)
+            
+            raw_query = data['raw_query']
+
+            k_ctx = ''
+            for i in range(concate_k):
+                k_ctx = data['ctxs'][i]["retrieval text"] + k_ctx
+            
+            assert raw_query not in hashed_results.keys() or k_ctx == hashed_results[raw_query]
+            hashed_results[raw_query] = k_ctx
+    
+    return hashed_results
+
+
+def main_retrieval(
+        data_dir: str = "/gscratch/zlab/rulins/data/mmlu",
+        ntrain: int = 0,
+        test_jsonl_with_retrieval: str = "",
+        concate_k: int = 1,
+        **kwargs
+):
+    args = Namespace(**locals())
+
+    # get hashed results (concatenated prompts w/o truncation)
+    hashed_retrieval_results = hash_retrieval_results(test_jsonl_with_retrieval, concate_k)
+
+    model = select_model(max_input_length=2048, max_output_length=2, **kwargs)
+    print(locals())
+
+    subjects = sorted(
+        [
+            f.split("_test.csv")[0]
+            for f in os.listdir(os.path.join(args.data_dir, "test"))
+            if "_test.csv" in f
+        ]
+    )
+
+    all_cors = []
+    subcat_cors = {
+        subcat: []
+        for subcat_lists in get_subcategories().values()
+        for subcat in subcat_lists
+    }
+    cat_cors = {cat: [] for cat in get_categories()}
+
+    for subject in tqdm(subjects):
+        dev_df = pd.read_csv(
+            os.path.join(args.data_dir, "dev", subject + "_dev.csv"), header=None
+        )[: args.ntrain]
+        test_df = pd.read_csv(
+            os.path.join(args.data_dir, "test", subject + "_test.csv"), header=None
+        )
+
+        cors, acc, probs = evaluate(args, subject, model, dev_df, test_df, hashed_retrieval_results)
+        subcats = get_subcategories()[subject]
+        for subcat in subcats:
+            subcat_cors[subcat].append(cors)
+            for key in get_categories().keys():
+                if subcat in get_categories()[key]:
+                    cat_cors[key].append(cors)
+        all_cors.append(cors)
+
+    for subcat in subcat_cors:
+        subcat_acc = np.mean(np.concatenate(subcat_cors[subcat]))
+        print("Average accuracy {:.3f} - {}".format(subcat_acc, subcat))
+
+    for cat in cat_cors:
+        cat_acc = np.mean(np.concatenate(cat_cors[cat]))
+        print("Average accuracy {:.3f} - {}".format(cat_acc, cat))
+
+    weighted_acc = np.mean(np.concatenate(all_cors))
+    print("Average accuracy: {:.3f}".format(weighted_acc))
+    return weighted_acc
 
 """
 p mmlu.py main data/mmlu --model_name seq_to_seq --model_path declare-lab/flan-alpaca-xl

@@ -12,6 +12,7 @@ def main(task_name: str, **kwargs):
     task_map = dict(
         mmlu=mmlu.main,
         mmlu_retrieval_prepare=mmlu.save_inputs_for_retrieval,
+        mmlu_retrieval=mmlu.main_retrieval,
         bbh=bbh.main,
         drop=drop.main,
         humaneval=humaneval,
