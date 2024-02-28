@@ -144,9 +144,6 @@ def evaluate(args, subject, model: EvalModel, dev_df, test_df, hashed_retrieval_
         k = args.ntrain
         prompt_end = format_example(test_df, i, include_answer=False)
         
-        if hashed_retrieval_results is not None:
-            prompt_end = 'The is an additional context about the question: ' + hashed_retrieval_results[prompt_end] + '\nThe question is: ' + prompt_end
-        
         train_prompt = gen_prompt(dev_df, subject, k)
         prompt = train_prompt + prompt_end
 
@@ -154,6 +151,10 @@ def evaluate(args, subject, model: EvalModel, dev_df, test_df, hashed_retrieval_
             k -= 1
             train_prompt = gen_prompt(dev_df, subject, k)
             prompt = train_prompt + prompt_end
+        
+        if hashed_retrieval_results is not None:
+            prompt_retrieval = hashed_retrieval_results[prompt_end]
+            prompt = prompt_retrieval + train_prompt + prompt_end
 
         label = test_df.iloc[i, test_df.shape[1] - 1]
         pred = model.run(prompt)
